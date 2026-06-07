@@ -15,6 +15,7 @@
 
 import curses
 import os
+import textwrap
 from datetime import datetime
 
 from core import parser, storage
@@ -199,14 +200,30 @@ def tui_controller(stdscr):
     block_idx = 0
     focus = "history"
 
+    history_scroll = 0
+    entries_scroll = 0
+
     while True:
         stdscr.erase()
         height, width = stdscr.getmaxyx()
+        max_text_width = width - 39
 
         history_marker = " *" if focus == "history" else ""
         safe_addstr(stdscr, 1, 2, f"=== MERLIN ==={history_marker}", curses.A_BOLD)
-        for i, date in enumerate(available_dates):
-            if i == selected_date_idx:
+
+        visible_history_lines = height - 4
+        if selected_date_idx < history_scroll:
+            history_scroll = selected_date_idx
+        elif selected_date_idx >= history_scroll + visible_history_lines:
+            history_scroll = selected_date_idx - visible_history_lines + 1
+
+        for i in range(visible_history_lines):
+            idx = history_scroll + i
+            if idx >= len(available_dates):
+                break
+            date = available_dates[idx]
+
+            if idx == selected_date_idx:
                 attr = curses.A_REVERSE if focus == "history" else curses.A_UNDERLINE
                 safe_addstr(stdscr, 3 + i, 2, f" > {date} < ", attr)
             else:
@@ -219,15 +236,55 @@ def tui_controller(stdscr):
         day_data = storage.load_day(current_date)
         blocks = day_data.get("blocks", [])
 
+        if len(blocks) == 0:
+            block_idx = 0
+            if focus == "entries":
+                focus = "history"
+        elif block_idx >= len(blocks):
+            block_idx = len(blocks) - 1
+
         entries_marker = " *" if focus == "entries" else ""
         safe_addstr(
             stdscr, 1, 25, f"Date: {current_date}{entries_marker}", curses.A_BOLD
         )
 
+        if len(blocks) > 0 and focus == "entries":
+            if block_idx < entries_scroll:
+                entries_scroll = block_idx
+
+            while True:
+                sim_y = 3
+                for i in range(entries_scroll, block_idx + 1):
+                    clean_text, _ = parser.process_line(blocks[i]["text"])
+                    lines_count = 0
+                    for p in clean_text.split("\n"):
+                        if max_text_width > 0:
+                            if len(p) == 0:
+                                lines_count += 1
+                            else:
+                                w = textwrap.wrap(
+                                    p, width=max_text_width, break_long_words=True
+                                )
+                                lines_count += len(w) if w else 1
+                        else:
+                            lines_count += 1
+
+                    sim_y += lines_count + 1
+
+                if sim_y > height - 2 and entries_scroll < block_idx:
+                    entries_scroll += 1
+                else:
+                    break
+        elif focus == "history":
+            entries_scroll = 0
+
         y_offset = 3
-        for i, block in enumerate(blocks):
+
+        for i in range(entries_scroll, len(blocks)):
+            block = blocks[i]
             if y_offset >= height - 2:
                 break
+
             clean_text, color_name = parser.process_line(block["text"])
             color_attr = colors.get(color_name, colors["white"])
 
@@ -236,7 +293,6 @@ def tui_controller(stdscr):
 
             safe_addstr(stdscr, y_offset, 27, f"[{block['hour']}] ", colors["green"])
 
-            max_text_width = width - 39
             text_lines = []
 
             for paragraph in clean_text.split("\n"):
@@ -244,12 +300,13 @@ def tui_controller(stdscr):
                     if len(paragraph) == 0:
                         text_lines.append("")
                     else:
-                        text_lines.extend(
-                            [
-                                paragraph[j : j + max_text_width]
-                                for j in range(0, len(paragraph), max_text_width)
-                            ]
+                        wrapped = textwrap.wrap(
+                            paragraph, width=max_text_width, break_long_words=True
                         )
+                        if wrapped:
+                            text_lines.extend(wrapped)
+                        else:
+                            text_lines.append("")
                 else:
                     text_lines.append(paragraph)
 
@@ -277,18 +334,24 @@ def tui_controller(stdscr):
             break
 
         elif key == 9:  # TAB
-            focus = "entries" if focus == "history" else "history"
-            block_idx = 0
+            if len(blocks) > 0:
+                focus = "entries" if focus == "history" else "history"
+            else:
+                focus = "history"
 
         elif key in [curses.KEY_UP, ord("k")]:
             if focus == "history" and selected_date_idx > 0:
                 selected_date_idx -= 1
+                block_idx = 0  # Reiniciamos el block al cambiar de día
+                entries_scroll = 0  # Reiniciamos el scroll visual
             elif focus == "entries" and block_idx > 0:
                 block_idx -= 1
 
         elif key in [curses.KEY_DOWN, ord("j")]:
             if focus == "history" and selected_date_idx < (len(available_dates) - 1):
                 selected_date_idx += 1
+                block_idx = 0  # Reiniciamos el block al cambiar de día
+                entries_scroll = 0  # Reiniciamos el scroll visual
             elif focus == "entries" and block_idx < (len(blocks) - 1):
                 block_idx += 1
 
